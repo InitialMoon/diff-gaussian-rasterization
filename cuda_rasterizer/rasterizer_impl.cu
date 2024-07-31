@@ -224,6 +224,12 @@ int CudaRasterizer::Rasterizer::forward(
 	int* radii,
 	bool debug)
 {
+	/*
+	这段代码计算了相机的焦距（focal length）在图像的纵向和横向方向上的值。
+	具体来说，focal_y 和 focal_x 是计算得到的焦距值，表示相机在垂直方向和水平方向上的焦距。
+	tan_fovy 和 tan_fovx 是视场角的切线值，用于计算焦距。
+	focal_y和focal_x不应该是一样的吗？好怪
+	*/
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
 
