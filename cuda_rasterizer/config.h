@@ -13,7 +13,7 @@
 #define CUDA_RASTERIZER_CONFIG_H_INCLUDED
 
 #define NUM_CHANNELS 3 // Default 3, RGB
-#define BLOCK_X 16
-#define BLOCK_Y 16
+#define BLOCK_X 16 // 这是一个tile的宽度,不是最终划分的tile数量
+#define BLOCK_Y 16 // 这是一个tile的高度,不是最终划分的tile数量
 
 #endif

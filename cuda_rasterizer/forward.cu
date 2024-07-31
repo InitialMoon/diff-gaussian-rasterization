@@ -175,10 +175,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float* cov3Ds,
 	float* rgb,
 	float4* conic_opacity,
-	const dim3 grid,
+	const dim3 grid, // 描述每个tile中的像素尺寸，不是16*16是被他划分的每个格子的像素尺寸
 	uint32_t* tiles_touched,
 	bool prefiltered)
 {
+	// 它的作用是获取当前线程在网格中的全局索引
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
 		return;
@@ -189,6 +190,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	tiles_touched[idx] = 0;
 
 	// Perform near culling, quit if outside.
+	// 如果在投影范围之外就返回
 	float3 p_view;
 	if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
 		return;
@@ -201,6 +203,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// If 3D covariance matrix is precomputed, use it, otherwise compute
 	// from scaling and rotation parameters. 
+	// 根据输入的缩放和旋转参数，计算或使用预计算的3D协方差矩阵
 	const float* cov3D;
 	if (cov3D_precomp != nullptr)
 	{
@@ -227,11 +230,12 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// of screen-space tiles that this Gaussian overlaps with. Quit if
 	// rectangle covers 0 tiles. 
 	float mid = 0.5f * (cov.x + cov.z);
-	float lambda1 = mid + sqrt(max(0.1f, mid * mid - det));
-	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
-	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
+	float lambda1 = mid + sqrt(max(0.1f, mid * mid - det)); // 高斯椭球的长轴
+	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det)); // 高斯椭球的短轴
+	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));// 椭球的长轴记为半径
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
+	// 获取当前高斯椭圆覆盖的tile的范围，经验证
 	getRect(point_image, my_radius, rect_min, rect_max, grid);
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
@@ -247,11 +251,14 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	}
 
 	// Store some useful helper data for the next steps.
+	// 这里将高斯中心当做深度是错误的操作，因为应该表面才是真正的深度,但是其实表面的话如果很圆其实当做深度很怪
 	depths[idx] = p_view.z;
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
+	// 2维协方差矩阵以及透明度打包成一个float4
 	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] };
+	// 记录当前高斯椭圆覆盖的格子范围
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
 
@@ -306,6 +313,9 @@ renderCUDA(
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// End if entire block votes that it is done rasterizing
+		// 检测所有的线程（即每一个像素）是否渲染完了，也就是做完alpha混合了
+		// 这个sync函数会返回这个线程块中所有done为true的数量，如果等于了BLOCK_SIZE，那么就说明所有的线程都渲染完了
+		// 就可以停止了
 		int num_done = __syncthreads_count(done);
 		if (num_done == BLOCK_SIZE)
 			break;
@@ -325,10 +335,11 @@ renderCUDA(
 		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
 		{
 			// Keep track of current position in range
-			contributor++;
+			contributor++; // 记录有一个高斯核参与了投影
 
 			// Resample using conic matrix (cf. "Surface 
 			// Splatting" by Zwicker et al., 2001)
+			// 用高斯分布的公式计算权重即power当做高斯分布的方差，然后相乘得到不透明度
 			float2 xy = collected_xy[j];
 			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
 			float4 con_o = collected_conic_opacity[j];
@@ -340,21 +351,24 @@ renderCUDA(
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
-			float alpha = min(0.99f, con_o.w * exp(power));
-			if (alpha < 1.0f / 255.0f)
+			// 计算像素投影到面上的透明度,原始的不透明度只记录了中心的不透明度，是一个数
+			// 用高斯分布的公式计算权重即power当做高斯分布的方差，然后相乘得到不透明度
+			float alpha = min(0.99f, con_o.w * exp(power)); // 计算得到不透明度
+			if (alpha < 1.0f / 255.0f) // 如果不透明度太小，就不混合了
 				continue;
-			float test_T = T * (1 - alpha);
+			float test_T = T * (1 - alpha); // 计算当前累积到的透明度值T_i = (1 - alpha_1) * (1 - alpha_2) * ... * (1 - alpha_n)
+			// 如果当前累积到的透明度值T_i已经小于0.0001，则说明透明度已经用完了，基本上累积慢了，后面的球都看不到了，不用再累积了
 			if (test_T < 0.0001f)
 			{
-				done = true;
+				done = true; // 累积完毕，设置做完了
 				continue;
 			}
 
 			// Eq. (3) from 3D Gaussian splatting paper.
-			for (int ch = 0; ch < CHANNELS; ch++)
+			for (int ch = 0; ch < CHANNELS; ch++) // CHANNELS = 3 表示rgb
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 
-			T = test_T;
+			T = test_T; // 更新T_i
 
 			// Keep track of last range entry to update this
 			// pixel.
@@ -366,9 +380,9 @@ renderCUDA(
 	// rendering data to the frame and auxiliary buffers.
 	if (inside)
 	{
-		final_T[pix_id] = T;
+		final_T[pix_id] = T; // 记录这个像素上最终的投射率，如果还有剩余的投射率，最终要和背景颜色进行混合
 		n_contrib[pix_id] = last_contributor;
-		for (int ch = 0; ch < CHANNELS; ch++)
+		for (int ch = 0; ch < CHANNELS; ch++) // 做3通道颜色和背景颜色的混合
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 	}
 }
@@ -421,7 +435,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	float* cov3Ds,
 	float* rgb,
 	float4* conic_opacity,
-	const dim3 grid,
+	const dim3 grid, // 从rasterizer_impl.cu中计算传递而来
 	uint32_t* tiles_touched,
 	bool prefiltered)
 {

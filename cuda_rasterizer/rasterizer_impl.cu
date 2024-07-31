@@ -32,6 +32,7 @@ namespace cg = cooperative_groups;
 
 // Helper function to find the next-highest bit of the MSB
 // on the CPU.
+//似乎是用二分法检测n表示成二进制数除去前导零有几位（n=0时返回1）
 uint32_t getHigherMsb(uint32_t n)
 {
 	uint32_t msb = sizeof(n) * 4;
@@ -49,8 +50,10 @@ uint32_t getHigherMsb(uint32_t n)
 	return msb;
 }
 
-// Wrapper method to call auxiliary coarse frustum containment test.
+// Wrapper method to call auxiliary(辅助) coarse(粗) frustum(视椎体) containment test.
+// 包装方法调用辅助粗视锥体密闭试验。
 // Mark all Gaussians that pass it.
+// 被markVisible调用
 __global__ void checkFrustum(int P,
 	const float* orig_points,
 	const float* viewmatrix,
@@ -67,14 +70,16 @@ __global__ void checkFrustum(int P,
 
 // Generates one key/value pair for all Gaussian / tile overlaps. 
 // Run once per Gaussian (1:N mapping).
+// 为所有高斯/瓦片重叠生成一个键/值对。
+// 每个高斯运行一次（1：N 映射）。
 __global__ void duplicateWithKeys(
-	int P,
-	const float2* points_xy,
-	const float* depths,
-	const uint32_t* offsets,
-	uint64_t* gaussian_keys_unsorted,
-	uint32_t* gaussian_values_unsorted,
-	int* radii,
+	int P, // 点数量
+	const float2* points_xy, // 点的投影到图像平面中的坐标
+	const float* depths, // 点的深度
+	const uint32_t* offsets, // 点偏移值,并行索引使用
+	uint64_t* gaussian_keys_unsorted, // 排序前的键
+	uint32_t* gaussian_values_unsorted, // 排序前的值
+	int* radii, // 半径数组
 	dim3 grid)
 {
 	auto idx = cg::this_grid().thread_rank();
@@ -137,7 +142,7 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 		ranges[currtile].y = L;
 }
 
-// Mark Gaussians as visible/invisible, based on view frustum testing
+// Mark Gaussians as visible/invisible, based on view frustum testing(视锥体试验)
 void CudaRasterizer::Rasterizer::markVisible(
 	int P,
 	float* means3D,
@@ -145,7 +150,7 @@ void CudaRasterizer::Rasterizer::markVisible(
 	float* projmatrix,
 	bool* present)
 {
-	checkFrustum << <(P + 255) / 256, 256 >> > (
+	checkFrustum << <(P + 255) / 256, 256 >> > (// P是点云数量，这就是开满了所有线程,一个线程计算一个check
 		P,
 		means3D,
 		viewmatrix, projmatrix,
@@ -222,7 +227,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
 
-	size_t chunk_size = required<GeometryState>(P);
+	size_t chunk_size = required<GeometryState>(P); // 计算了GeometryState所需的大小
 	char* chunkptr = geometryBuffer(chunk_size);
 	GeometryState geomState = GeometryState::fromChunk(chunkptr, P);
 
@@ -231,8 +236,9 @@ int CudaRasterizer::Rasterizer::forward(
 		radii = geomState.internal_radii;
 	}
 
-	dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
-	dim3 block(BLOCK_X, BLOCK_Y, 1);
+	// Create Tiles
+	dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);// 这个是每个tile中的像素长宽数
+	dim3 block(BLOCK_X, BLOCK_Y, 1); // 这个是描述有x*y个由上面那个大小tile组成的最终像素平面
 
 	// Dynamically resize image-based auxiliary buffers during training
 	size_t img_chunk_size = required<ImageState>(width * height);
