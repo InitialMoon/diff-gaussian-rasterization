@@ -28,6 +28,8 @@ def rasterize_gaussians(
     rotations,
     cov3Ds_precomp,
     raster_settings,
+    viewmatrix,
+    projmatrix
 ):
     return _RasterizeGaussians.apply(
         means3D,
@@ -39,6 +41,8 @@ def rasterize_gaussians(
         rotations,
         cov3Ds_precomp,
         raster_settings,
+        viewmatrix,
+        projmatrix
     )
 
 class _RasterizeGaussians(torch.autograd.Function):
@@ -54,6 +58,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         rotations,
         cov3Ds_precomp,
         raster_settings,
+        viewmatrix,
+        projmatrix
     ):
 
         # Restructure arguments the way that the C++ lib expects them
@@ -66,8 +72,10 @@ class _RasterizeGaussians(torch.autograd.Function):
             rotations,
             raster_settings.scale_modifier,
             cov3Ds_precomp,
-            raster_settings.viewmatrix,
-            raster_settings.projmatrix,
+            # raster_settings.viewmatrix,
+            # raster_settings.projmatrix,
+            viewmatrix,
+            projmatrix,
             raster_settings.tanfovx,
             raster_settings.tanfovy,
             raster_settings.image_height,
@@ -83,19 +91,24 @@ class _RasterizeGaussians(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                num_rendered, color, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(*args)
+                num_rendered, color, radii, geomBuffer, binningBuffer, imgBuffer, depth, alpha, gaussians_count, important_score = _C.rasterize_gaussians(*args)
+                # num_rendered, color, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_fw.dump")
                 print("\nAn error occured in forward. Please forward snapshot_fw.dump for debugging.")
                 raise ex
         else:
-            num_rendered, color, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(*args)
+            num_rendered, color, radii, geomBuffer, binningBuffer, imgBuffer, depth, alpha, gaussians_count, important_score = _C.rasterize_gaussians(*args)
+            # num_rendered, color, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(*args)
 
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
+        ctx.viewmatrix = viewmatrix 
+        ctx.projmatrix = projmatrix 
         ctx.num_rendered = num_rendered
         ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer)
-        return color, radii
+        return color, radii, depth, alpha, gaussians_count, important_score
+        # return color, radii
 
     @staticmethod
     def backward(ctx, grad_out_color, _):
@@ -103,6 +116,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         # Restore necessary values from context
         num_rendered = ctx.num_rendered
         raster_settings = ctx.raster_settings
+        viewmatrix = ctx.viewmatrix 
+        projmatrix = ctx.projmatrix 
         colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
 
         # Restructure args as C++ method expects them
@@ -114,8 +129,10 @@ class _RasterizeGaussians(torch.autograd.Function):
                 rotations, 
                 raster_settings.scale_modifier, 
                 cov3Ds_precomp, 
-                raster_settings.viewmatrix, 
-                raster_settings.projmatrix, 
+                viewmatrix, 
+                projmatrix, 
+                # raster_settings.viewmatrix, 
+                # raster_settings.projmatrix, 
                 raster_settings.tanfovx, 
                 raster_settings.tanfovy, 
                 grad_out_color, 
@@ -161,8 +178,9 @@ class GaussianRasterizationSettings(NamedTuple):
     tanfovy : float
     bg : torch.Tensor
     scale_modifier : float
-    viewmatrix : torch.Tensor
-    projmatrix : torch.Tensor
+    # 这里直接通过后面调用方法可以获得，所以这里就不传了
+    # viewmatrix : torch.Tensor
+    # projmatrix : torch.Tensor
     sh_degree : int
     campos : torch.Tensor
     prefiltered : bool
@@ -179,13 +197,16 @@ class GaussianRasterizer(nn.Module):
             raster_settings = self.raster_settings
             visible = _C.mark_visible(
                 positions,
-                raster_settings.viewmatrix,
-                raster_settings.projmatrix)
+                # TODO: delete those to params
+                # raster_settings.viewmatrix,
+                # raster_settings.projmatrix
+                )
             
         return visible
 
-    def forward(self, means3D, means2D, opacities, shs = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None):
+    def forward(self, means3D, means2D, opacities, shs = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None, viewmatrix = None, projmatrix = None):
         
+        raster_settings = self.raster_settings
         raster_settings = self.raster_settings
 
         if (shs is None and colors_precomp is None) or (shs is not None and colors_precomp is not None):
@@ -217,5 +238,7 @@ class GaussianRasterizer(nn.Module):
             rotations,
             cov3D_precomp,
             raster_settings, 
+            viewmatrix,
+            projmatrix
         )
 
