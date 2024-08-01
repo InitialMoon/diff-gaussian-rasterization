@@ -29,7 +29,7 @@ namespace CudaRasterizer
 			bool* present);
 
 		static int forward(
-			std::function<char* (size_t)> geometryBuffer,
+			std::function<char* (size_t)> geometryBuffer, //表示一种可以接受一个size_t类型参数并返回一个指向char类型的指针的函数或可调用对象。
 			std::function<char* (size_t)> binningBuffer,
 			std::function<char* (size_t)> imageBuffer,
 			const int P, int D, int M,

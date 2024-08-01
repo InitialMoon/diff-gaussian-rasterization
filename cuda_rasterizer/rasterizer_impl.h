@@ -77,7 +77,7 @@ namespace CudaRasterizer
 	/// @param accum_alpha 存储了每个像素的累积alpha值
 	struct ImageState
 	{
-		uint2* ranges;
+		uint2* ranges; // 这个ranges是一个做闭右开的区间,表示每个tile的像素id范围
 		uint32_t* n_contrib;
 		float* accum_alpha;
 
