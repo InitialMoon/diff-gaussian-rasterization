@@ -356,8 +356,8 @@ renderCUDA(
 			float alpha = min(0.99f, con_o.w * exp(power)); // 计算得到不透明度
 			if (alpha < 1.0f / 255.0f) // 如果不透明度太小，就不混合了
 				continue;
-			float test_T = T * (1 - alpha); // 计算当前累积到的透明度值T_i = (1 - alpha_1) * (1 - alpha_2) * ... * (1 - alpha_n)
-			// 如果当前累积到的透明度值T_i已经小于0.0001，则说明透明度已经用完了，基本上累积慢了，后面的球都看不到了，不用再累积了
+			float test_T = T * (1 - alpha); // 计算当前累积到不透明度值T_i = (1 - alpha_1) * (1 - alpha_2) * ... * (1 - alpha_n)
+			// 如果当前累积到的透明度值T_i已经小于0.0001，则说明透明度已经用完了，基本上累积满了，后面的球都看不到了，不用再累积了
 			if (test_T < 0.0001f)
 			{
 				done = true; // 累积完毕，设置做完了

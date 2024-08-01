@@ -428,8 +428,11 @@ int CudaRasterizer::Rasterizer::forward(
 // Produce necessary gradients for optimization, corresponding
 // to forward render pass
 void CudaRasterizer::Rasterizer::backward(
-	const int P, int D, int M, int R,
-	const float* background,
+	const int P, // 高斯核数量
+	int D, // 球谐函数阶数
+	int M, // 3通道球协系数个数
+	int R, // 对应forward中的num_rendered, 渲染的高斯点的数量
+	const float* background, // 背景颜色
 	const int width, int height,
 	const float* means3D,
 	const float* shs,
@@ -443,24 +446,26 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* campos,
 	const float tan_fovx, float tan_fovy,
 	const int* radii,
-	char* geom_buffer,
-	char* binning_buffer,
-	char* img_buffer,
-	const float* dL_dpix,
-	float* dL_dmean2D,
-	float* dL_dconic,
-	float* dL_dopacity,
-	float* dL_dcolor,
-	float* dL_dmean3D,
-	float* dL_dcov3D,
-	float* dL_dsh,
-	float* dL_dscale,
-	float* dL_drot,
+	char* geom_buffer,// 记录前向传播过程中计算的结果
+	char* binning_buffer,// 记录前向传播过程中计算的结果
+	char* img_buffer,// 记录前向传播过程中计算的结果
+
+	const float* dL_dpix, // loss对每个像素颜色的导数
+	float* dL_dmean2D, // loss对Gaussian二维中心坐标的导数
+	float* dL_dconic, // loss对椭圆二次型矩阵的导数
+	float* dL_dopacity, // loss对高斯核不透明度的导数
+	float* dL_dcolor, // loss对Gaussian颜色的导数(从相机看向Gaussian的颜色,和sh不一样)
+	float* dL_dmean3D, // loss对Gaussian三维中心坐标的导数
+	float* dL_dcov3D, // loss对Gaussian协方差矩阵的导数
+	float* dL_dsh, // loss对球谐系数的导数
+	float* dL_dscale, // loss对Gaussian缩放参数的导数
+	float* dL_drot, // loss对Gaussian 四元数的导数
 	bool debug)
 {
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
+	// 上面这些缓冲区都是在前向传播的时候存下来的，可以看到是作为参数传递进来的
 
 	if (radii == nullptr)
 	{
@@ -499,6 +504,7 @@ void CudaRasterizer::Rasterizer::backward(
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
 	// use the one we computed ourselves.
 	const float* cov3D_ptr = (cov3D_precomp != nullptr) ? cov3D_precomp : geomState.cov3D;
+	// 因为是反向传播，所以preprocess放在后面了(❁´◡`❁)
 	CHECK_CUDA(BACKWARD::preprocess(P, D, M,
 		(float3*)means3D,
 		radii,

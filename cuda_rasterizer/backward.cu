@@ -419,18 +419,25 @@ renderCUDA(
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
 	const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
 	const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
+	// 像素起始xy轴坐标值
 	const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	// 像素起始下标值
 	const uint32_t pix_id = W * pix.y + pix.x;
+	// 像素在整幅画中的起始下标值
 	const float2 pixf = { (float)pix.x, (float)pix.y };
 
 	const bool inside = pix.x < W&& pix.y < H;
+	// tile的像素范围,range的两个维度都是编号，一个是tile的像素编号下界，一个是tile的像素编号上界
 	const uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
 
+	// 这个是计算一共要计算几个block
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
 	bool done = !inside;
+	// 执行计算的像素范围
 	int toDo = range.y - range.x;
 
+	// 初始化用于存储高斯点属性的共享内存。
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
@@ -439,15 +446,18 @@ renderCUDA(
 	// In the forward, we stored the final value for T, the
 	// product of all (1 - alpha) factors. 
 	const float T_final = inside ? final_Ts[pix_id] : 0;
+	// 计算当前累积到不透明度值T_i = (1 - alpha_1) * (1 - alpha_2) * ... * (1 - alpha_n)
 	float T = T_final;
 
 	// We start from the back. The ID of the last contributing
 	// Gaussian is known from each pixel from the forward.
-	uint32_t contributor = toDo;
+	uint32_t contributor = toDo;// 这是啥
+	// 取出这个像素点是由几个高斯核累积起来的，最终决定了要链式求导的循环数
 	const int last_contributor = inside ? n_contrib[pix_id] : 0;
 
-	float accum_rec[C] = { 0 };
-	float dL_dpixel[C];
+	float accum_rec[C] = { 0 }; // C是颜色通道数rgb，就是3
+	float dL_dpixel[C]; // 用于记录每个通道上的导数结果
+	// 这里的赋值没看懂，除非说是初始化
 	if (inside)
 		for (int i = 0; i < C; i++)
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
@@ -461,34 +471,48 @@ renderCUDA(
 	const float ddely_dy = 0.5 * H;
 
 	// Traverse all Gaussians
+	// toDO记录的事要计算的像素点数,细粒度更高，在里面进行逐像素迭代的时候要用
+	// rounds记录的是要计算的block数
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// Load auxiliary data into shared memory, start in the BACK
 		// and load them in revers order.
+		// 共享内存加载
+		// 使用共享内存加载当前批次的高斯点属性，并同步线程。
 		block.sync();
+		// 进程号
 		const int progress = i * BLOCK_SIZE + block.thread_rank();
 		if (range.x + progress < range.y)
 		{
+			// 计算得到了当前线程的高斯点编号,很奇怪，一个线程不应该有很多个高斯点云吗
 			const int coll_id = point_list[range.y - progress - 1];
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
 			for (int i = 0; i < C; i++)
+				// 获取当前高斯核的颜色
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
 		}
 		block.sync();
 
 		// Iterate over Gaussians
-		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
+		// 迭代计算每一个高斯核
+		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++) 
+						// 保证toDO不会大于256，并且保证了在边界出tile的大小被裁切后只需要处理toDo个像素的情况
 		{
 			// Keep track of current Gaussian ID. Skip, if this one
 			// is behind the last contributor for this pixel.
+			// 这里没看懂last_contributor是什么意思
 			contributor--;
 			if (contributor >= last_contributor)
 				continue;
 
 			// Compute blending values, as before.
 			const float2 xy = collected_xy[j];
+			// 这里需要看懂xy和pixf是什么意思
+			// pixf是像素在整幅画中的起始下标值的float类型变量
+			// collected_xy是高斯核投影在最终像素平面上的中心点的位置坐标
+			// 因此下面的d记录的就是
 			const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
 			const float4 con_o = collected_conic_opacity[j];
 			const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
