@@ -67,16 +67,10 @@ RasterizeGaussiansCUDA(
   auto int_opts = means3D.options().dtype(torch::kInt32);
   auto float_opts = means3D.options().dtype(torch::kFloat32);
 
-<<<<<<< HEAD
-  torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts); // 输出颜色
-  torch::Tensor out_depth = torch::full({1, H, W}, 0.0, float_opts);
-  torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32)); // 半径
-=======
   torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
   torch::Tensor out_depth = torch::full({1, H, W}, 0.0, float_opts);
   torch::Tensor out_alpha = torch::full({1, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
->>>>>>> origin/my_depth
   
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte); // 这一行之后创建的张量都是kByte类型的，本质是8位无符号整数,图元一般都是8位无符号整数
