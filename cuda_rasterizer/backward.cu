@@ -375,6 +375,7 @@ __global__ void preprocessCUDA(
 
 	// Compute loss gradient w.r.t. 3D means due to gradients of 2D means
 	// from rendering procedure
+	// 从Gaussian中心在像平面上的二维坐标的梯度计算其三维坐标的梯度；
 	glm::vec3 dL_dmean;
 	float mul1 = (proj[0] * m.x + proj[4] * m.y + proj[8] * m.z + proj[12]) * m_w * m_w;
 	float mul2 = (proj[1] * m.x + proj[5] * m.y + proj[9] * m.z + proj[13]) * m_w * m_w;
@@ -387,10 +388,13 @@ __global__ void preprocessCUDA(
 	dL_dmeans[idx] += dL_dmean;
 
 	// Compute gradient updates due to computing colors from SHs
+	// 从Gaussian颜色的梯度计算球谐系数的梯度（利用computeColorFromSH函数）；
 	if (shs)
 		computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, shs, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh);
 
 	// Compute gradient updates due to computing covariance from scale/rotation
+	// 从Gaussian在像平面上投影的2D椭圆二次型矩阵的梯度计算其3D协方差矩阵梯度；
+	// 从协方差矩阵梯度计算缩放和旋转参数的梯度。
 	if (scales)
 		computeCov3D(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
 }
@@ -467,6 +471,7 @@ renderCUDA(
 
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
+	// 如作者所讲，位置学习率是由相机的范围来调整的
 	const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
 
@@ -512,35 +517,37 @@ renderCUDA(
 			// 这里需要看懂xy和pixf是什么意思
 			// pixf是像素在整幅画中的起始下标值的float类型变量
 			// collected_xy是高斯核投影在最终像素平面上的中心点的位置坐标
-			// 因此下面的d记录的就是
+			// 因此下面的d记录的就是，目前所在计算的像素位置下标和高斯核投影在最终像素平面上的中心点的位置坐标的差值
 			const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
 			const float4 con_o = collected_conic_opacity[j];
+			// 是计算投影的2D高斯对这个像素值的影响的指标
 			const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			if (power > 0.0f)
 				continue;
 
 			const float G = exp(power);
-			const float alpha = min(0.99f, con_o.w * G);
+			const float alpha = min(0.99f, con_o.w * G); // 计算出当前高斯核的不透明度
 			if (alpha < 1.0f / 255.0f)
 				continue;
 
 			T = T / (1.f - alpha);
-			const float dchannel_dcolor = alpha * T;
+			const float dchannel_dcolor = alpha * T; // 通道改变相对于最终颜色改变的k值，就是不透明度
 
 			// Propagate gradients to per-Gaussian colors and keep
 			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
 			// pair).
 			float dL_dalpha = 0.0f;
 			const int global_id = collected_id[j];
-			for (int ch = 0; ch < C; ch++)
+			for (int ch = 0; ch < C; ch++) // 3个通道都要计算一下
 			{
-				const float c = collected_colors[ch * BLOCK_SIZE + j];
+				const float c = collected_colors[ch * BLOCK_SIZE + j]; // 当前像素当前通道的颜色值
 				// Update last color (to be used in the next iteration)
+				// 一层一层剥掉之前累积的颜色,求出当前层高斯对于最终投影的影响率
 				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
 				last_color[ch] = c;
 
 				const float dL_dchannel = dL_dpixel[ch];
-				dL_dalpha += (c - accum_rec[ch]) * dL_dchannel;
+				dL_dalpha += (c - accum_rec[ch]) * dL_dchannel; // c是当前剩余的颜色，减去累积的颜色，乘上通道改变相对于最终颜色的改变率，就是通道改变相对于最终投影的改变率
 				// Update the gradients w.r.t. color of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
@@ -552,6 +559,7 @@ renderCUDA(
 
 			// Account for fact that alpha also influences how much of
 			// the background color is added if nothing left to blend
+			// 添加背景颜色乘损失对像素求导作为透明度导数的一部分贡献
 			float bg_dot_dpixel = 0;
 			for (int i = 0; i < C; i++)
 				bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
@@ -559,22 +567,30 @@ renderCUDA(
 
 
 			// Helpful reusable temporary variables
-			const float dL_dG = con_o.w * dL_dalpha;
+			const float dL_dG = con_o.w * dL_dalpha; // 损失对于当前高斯核的导数基数，G就是当前高斯核对当前像素的影响率
 			const float gdx = G * d.x;
-			const float gdy = G * d.y;
+			const float gdy = G * d.y; // gdx 和 gdy 分别是高斯函数值 𝐺  与位置偏移向量 𝑑  的 x 和 y 分量的乘积。
+			// 高斯函数值 𝐺 对位置偏移向量 𝑑 的 x 和 y 分量的导数。
+			// 负的是合理的，因为当d越大，说明离高斯核距离越远，对于损失的影响程度就越小，con_o.y和x是2d协方差矩阵中的参数
+			// 表示了高斯核在x和y方向上的方差，和gdx和gdy相乘得到了损失对于高斯核在x和y方向上的偏移量的导数
 			const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
 			const float dG_ddely = -gdy * con_o.z - gdx * con_o.y;
 
 			// Update gradients w.r.t. 2D mean position of the Gaussian
+			// ddelx_dx 是由相机参数决定的，当相机x方向越宽，ddelx_dx越大，loss对于位置导数越大
+			// 这是合理的吗，相机越宽，说明2d中心移动一点距离就会导致更多的像素产生变化，因此损失对于位置导数应该越大
+			// ddely_dy 同理
 			atomicAdd(&dL_dmean2D[global_id].x, dL_dG * dG_ddelx * ddelx_dx);
 			atomicAdd(&dL_dmean2D[global_id].y, dL_dG * dG_ddely * ddely_dy);
 
 			// Update gradients w.r.t. 2D covariance (2x2 matrix, symmetric)
+			// 不透明度乘距离高斯核中心距离的衰减系数即使想要的相对于不透明度的梯度了
 			atomicAdd(&dL_dconic2D[global_id].x, -0.5f * gdx * d.x * dL_dG);
 			atomicAdd(&dL_dconic2D[global_id].y, -0.5f * gdx * d.y * dL_dG);
 			atomicAdd(&dL_dconic2D[global_id].w, -0.5f * gdy * d.y * dL_dG);
 
 			// Update gradients w.r.t. opacity of the Gaussian
+			// 不透明度乘距离高斯核中心距离的衰减系数即使想要的相对于不透明度的梯度了
 			atomicAdd(&(dL_dopacity[global_id]), G * dL_dalpha);
 		}
 	}
