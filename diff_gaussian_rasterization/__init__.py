@@ -196,7 +196,7 @@ class GaussianRasterizer(nn.Module):
         with torch.no_grad():
             raster_settings = self.raster_settings
             visible = _C.mark_visible(
-                positions,
+                positions
                 # TODO: delete those to params
                 # raster_settings.viewmatrix,
                 # raster_settings.projmatrix
