@@ -106,11 +106,11 @@ class _RasterizeGaussians(torch.autograd.Function):
         ctx.projmatrix = projmatrix 
         ctx.num_rendered = num_rendered
         ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer)
-        return color, radii, depth, alpha
+        return color, radii, depth, alpha, num_rendered
         # return color, radii, depth, alpha, gaussians_count
 
     @staticmethod
-    def backward(ctx, grad_out_color, grad_radii, grad_depth, grad_alpha):
+    def backward(ctx, grad_out_color, grad_radii, grad_depth, grad_alpha, num_rendered):
 
         # Restore necessary values from context
         num_rendered = ctx.num_rendered
@@ -167,6 +167,10 @@ class _RasterizeGaussians(torch.autograd.Function):
             grad_rotations,
             grad_cov3Ds_precomp,
             None,
+            # 这里的3个None是表示raster_setting没有梯度，
+            # 因为作者乱搞，把两个投影矩阵提出来了，所以输入的时候多了两个变量，原本都是属于taster_setting的，因此没事，都返回None数量就对了
+            None,
+            None
         )
 
         return grads
